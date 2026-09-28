@@ -9,7 +9,7 @@ error_reporting(E_ALL);
 date_default_timezone_set('Asia/Kolkata');
 
 // ==========================================
-// 1. SIGN API CLASS (Directly Embedded)
+// 1. SIGN API CLASS DEFINITION
 // ==========================================
 class signapi
 {
@@ -101,25 +101,14 @@ class signapi
 }
 
 // ==========================================
-// 2. CONFIGURATION & DATABASE SETUP
+// 2. GATEWAY CONFIGURATION
 // ==========================================
-// Include database connection if available
-$appConfig = __DIR__ . '/../../include/app_config.php';
-if (file_exists($appConfig)) {
-    require_once $appConfig;
-}
-
-$rootConfig = dirname(__DIR__) . '/config.php';
-if (file_exists($rootConfig)) {
-    include_once $rootConfig;
-}
-
-// Fallback helper for notify_url if app_url() is not defined in config
-if (!function_exists('app_url')) {
-    function app_url(string $path = ''): string {
+// Helper for callback URL
+if (!function_exists('get_base_url')) {
+    function get_base_url(): string {
         $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
         $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
-        return rtrim($protocol . $host, '/') . '/' . ltrim($path, '/');
+        return rtrim($protocol . $host, '/');
     }
 }
 
@@ -128,53 +117,67 @@ $gatewayConfig = [
     'merch_no'   => 'avtej',
     'api_key'    => 'n5c01VfM44wSwD0tU60Z',
     'currency'   => 'INR',
-    'notify_url' => app_url('/pages/index/payment/aeropay/confirm.php'),
+    'notify_url' => get_base_url() . '/pages/index/payment/aeropay/confirm.php',
     'prefix'     => 'aero',
 ];
 
+// Optional: include local DB config if present
+$appConfig = __DIR__ . '/../../include/app_config.php';
+if (file_exists($appConfig)) {
+    @include_once $appConfig;
+}
+
 $error = '';
-$generatedUrl = '';
+$paymentResult = null;
 
 // ==========================================
-// 3. FORM PROCESSING & AEROPAY CALL
+// 3. ORDER SUBMISSION PROCESSING
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = trim((string) ($_POST['username'] ?? ''));
-    $amount   = trim((string) ($_POST['amount'] ?? ''));
+    $amountInput = trim((string) ($_POST['amount'] ?? ''));
 
-    if ($username === '' || $amount === '') {
-        $error = 'Please enter both Username and Deposit Amount.';
-    } elseif (!is_numeric($amount) || (float) $amount <= 0) {
-        $error = 'Please enter a valid amount.';
+    if ($amountInput === '' || !is_numeric($amountInput) || (float) $amountInput <= 0) {
+        $error = 'Please enter a valid deposit amount greater than 0.';
     } else {
-        // Generate unique merchant order ID
-        $cleanUser       = preg_replace('/[^a-zA-Z0-9_]/', '', $username);
-        $merchantOrderNo = $gatewayConfig['prefix'] . 'xx' . $cleanUser . 'xx' . time();
-        $formattedAmount = number_format((float) $amount, 2, '.', '');
+        // --- RANDOM DATA GENERATION ---
+        // 1. Random user identifier
+        $randomUsername = 'usr_' . substr(md5((string) mt_rand()), 0, 6);
+        
+        // 2. Random 10-digit Indian mobile number
+        $randomPhone = (string) mt_rand(6000000000, 9999999999);
+        
+        // 3. Random email
+        $randomEmail = $randomUsername . '@quickpay.net';
 
-        // 1. Build Payload
+        // 4. Formatted values & Merchant Order ID
+        $formattedAmount = number_format((float) $amountInput, 2, '.', '');
+        $merchantOrderNo = $gatewayConfig['prefix'] . 'xx' . $randomUsername . 'xx' . time() . mt_rand(10, 99);
+
+        // --- PREPARE PAYLOAD ---
         $payload = [
             'amount'    => $formattedAmount,
             'orderNo'   => $merchantOrderNo,
             'merchNo'   => $gatewayConfig['merch_no'],
             'currency'  => $gatewayConfig['currency'],
             'notifyUrl' => $gatewayConfig['notify_url'],
+            'phone'     => $randomPhone,
+            'email'     => $randomEmail,
         ];
 
-        // 2. Generate Sign Source & Sign using signapi class
+        // --- SIGN PAYLOAD ---
         $signSource      = signapi::buildSignSource($payload);
         $payload['sign'] = signapi::sign($payload, $gatewayConfig['api_key']);
 
-        // 3. POST JSON directly to Aeropay
+        // --- DISPATCH API REQUEST ---
         $apiUrl   = rtrim($gatewayConfig['api_base'], '/') . '/api/payIn';
         $response = signapi::postJson($apiUrl, $payload);
         $responseJson = $response['json'];
 
-        // Write debug log
+        // Write trace log
         @file_put_contents(
             __DIR__ . '/payment_log.txt',
             json_encode([
-                'created_at'  => date('Y-m-d H:i:s'),
+                'timestamp'   => date('Y-m-d H:i:s'),
                 'sign_source' => $signSource,
                 'request'     => $payload,
                 'response'    => $response,
@@ -182,38 +185,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             FILE_APPEND
         );
 
-        // 4. Handle Gateway Response
+        // --- HANDLE API RESPONSE ---
         if (!is_array($responseJson)) {
-            $error = 'Gateway returned an unreadable response. ' . ($response['curl_error'] ?? '');
+            $error = 'Failed to connect with payment gateway. ' . ($response['curl_error'] ?: 'Unknown network error.');
         } elseif ((string) ($responseJson['code'] ?? '') !== '0') {
-            $error = 'Gateway rejected: ' . ($responseJson['msg'] ?? 'Unknown error code');
+            $error = 'Gateway rejected request: ' . ($responseJson['msg'] ?? 'Transaction could not be generated.');
         } else {
             $data            = $responseJson['data'] ?? [];
             $payUrl          = is_array($data) ? ($data['code_url'] ?? '') : '';
             $platformOrderNo = is_array($data) ? ($data['businessNo'] ?? '') : '';
 
             if ($payUrl === '') {
-                $error = 'Gateway returned success but no payment URL was found.';
+                $error = 'Gateway approved order but did not return a checkout link (code_url).';
             } else {
-                // Save to database if $conn exists
+                // Optional: Save to database if $conn connection exists
                 if (isset($conn) && $conn instanceof mysqli) {
                     $today = date('Y-m-d H:i:s');
                     $upi   = 'aeropay';
                     $stmt  = $conn->prepare("INSERT INTO recharge (username, recharge, upi, utr, created_at, orderNo) VALUES (?, ?, ?, ?, ?, ?)");
                     if ($stmt) {
-                        $stmt->bind_param("ssssss", $username, $formattedAmount, $upi, $merchantOrderNo, $today, $platformOrderNo);
+                        $stmt->bind_param("ssssss", $randomUsername, $formattedAmount, $upi, $merchantOrderNo, $today, $platformOrderNo);
                         $stmt->execute();
                         $stmt->close();
                     }
                 }
 
-                // If checkbox is selected, show link on screen; otherwise auto-redirect
-                if (isset($_POST['redirect']) && $_POST['redirect'] === '1') {
+                // Check if direct auto-redirect was requested
+                if (isset($_POST['auto_redirect']) && $_POST['auto_redirect'] === '1') {
                     header("Location: " . $payUrl);
                     exit;
-                } else {
-                    $generatedUrl = $payUrl;
                 }
+
+                $paymentResult = [
+                    'pay_url'           => $payUrl,
+                    'order_no'          => $merchantOrderNo,
+                    'platform_order_no' => $platformOrderNo,
+                    'amount'            => $formattedAmount,
+                    'currency'          => $gatewayConfig['currency'],
+                    'phone'             => $randomPhone,
+                    'username'          => $randomUsername,
+                ];
             }
         }
     }
@@ -224,62 +235,140 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aeropay Deposit</title>
+    <title>Aeropay Quick Deposit</title>
     <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
-        .card { background: #ffffff; width: 100%; max-width: 440px; padding: 32px; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
-        h2 { margin: 0 0 8px; font-size: 20px; color: #0f172a; text-align: center; }
-        p.subtitle { margin: 0 0 24px; font-size: 14px; color: #64748b; text-align: center; }
-        .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px; font-size: 14px; border-radius: 6px; margin-bottom: 20px; }
-        .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 16px; font-size: 14px; border-radius: 6px; margin-bottom: 20px; word-break: break-all; }
-        .form-group { margin-bottom: 16px; }
-        label { display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px; }
-        input[type="text"], input[type="number"] { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 15px; outline: none; }
-        input:focus { border-color: #0284c7; ring: 2px solid #bae6fd; }
-        .checkbox-group { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 14px; color: #475569; }
-        .btn-submit { width: 100%; background: #0284c7; color: #ffffff; padding: 12px; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
-        .btn-submit:hover { background: #0369a1; }
-        .btn-pay { display: inline-block; margin-top: 10px; background: #16a34a; color: #fff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; }
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg-color: #f1f5f9;
+            --card-bg: #ffffff;
+            --text-dark: #0f172a;
+            --text-muted: #64748b;
+            --border-color: #cbd5e1;
+            --success: #16a34a;
+        }
+
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif; }
+        body { background: var(--bg-color); min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; padding: 20px; }
+        .deposit-card { background: var(--card-bg); width: 100%; max-width: 460px; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08); border: 1px solid #e2e8f0; }
+        h1 { margin: 0 0 6px; font-size: 22px; color: var(--text-dark); text-align: center; }
+        p.subtitle { margin: 0 0 24px; font-size: 14px; color: var(--text-muted); text-align: center; }
+        
+        .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 16px; font-size: 14px; border-radius: 8px; margin-bottom: 20px; line-height: 1.4; }
+        .result-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+        .result-title { font-weight: 700; color: #166534; margin-bottom: 12px; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+        
+        .meta-list { font-size: 13px; color: #374151; margin-bottom: 16px; border-top: 1px dashed #bbf7d0; padding-top: 10px; }
+        .meta-item { display: flex; justify-content: space-between; padding: 4px 0; }
+        .meta-item span.label { color: var(--text-muted); }
+        .meta-item span.val { font-weight: 600; font-family: monospace; }
+        
+        .url-display { background: #ffffff; border: 1px solid #bbf7d0; border-radius: 6px; padding: 10px; font-size: 12px; word-break: break-all; color: #1e293b; margin-bottom: 14px; font-family: monospace; }
+
+        .btn-pay { display: block; text-align: center; background: var(--success); color: #ffffff; padding: 14px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 16px; transition: opacity 0.2s; }
+        .btn-pay:hover { opacity: 0.9; }
+
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 14px; font-weight: 600; color: #334155; margin-bottom: 8px; }
+        .amount-input-wrap { position: relative; }
+        .currency-symbol { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-weight: 700; font-size: 18px; color: #64748b; }
+        input[type="number"] { width: 100%; padding: 12px 14px 12px 34px; border: 1.5px solid var(--border-color); border-radius: 8px; font-size: 18px; font-weight: 600; outline: none; transition: border-color 0.2s; }
+        input[type="number"]:focus { border-color: var(--primary); }
+
+        .quick-amounts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+        .quick-btn { background: #f8fafc; border: 1px solid var(--border-color); padding: 8px 0; border-radius: 6px; font-size: 13px; font-weight: 600; color: #475569; cursor: pointer; text-align: center; }
+        .quick-btn:hover { background: #e2e8f0; }
+
+        .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 13px; color: #475569; cursor: pointer; }
+        .checkbox-row input { cursor: pointer; }
+
+        .btn-submit { width: 100%; background: var(--primary); color: #ffffff; border: none; padding: 14px; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .btn-submit:hover { background: var(--primary-hover); }
     </style>
 </head>
 <body>
 
-<div class="card">
-    <h2>Generate Aeropay Link</h2>
-    <p class="subtitle">Enter details to initiate deposit transaction</p>
+<div class="deposit-card">
+    <h1>Aeropay Deposit</h1>
+    <p class="subtitle">Enter the amount to generate your payment link</p>
 
+    <!-- Error Alert -->
     <?php if ($error !== ''): ?>
-        <div class="alert-error"><?= htmlspecialchars($error) ?></div>
-    <?php endif; ?>
-
-    <?php if ($generatedUrl !== ''): ?>
-        <div class="alert-success">
-            <strong>Deposit Link Created!</strong><br>
-            <div style="margin-top: 8px; font-size: 12px; color: #374151;"><?= htmlspecialchars($generatedUrl) ?></div>
-            <a href="<?= htmlspecialchars($generatedUrl) ?>" target="_blank" class="btn-pay">Open Payment Page &rarr;</a>
+        <div class="alert-error">
+            <?= htmlspecialchars($error) ?>
         </div>
     <?php endif; ?>
 
+    <!-- Success Result Box with Generated Payment URL -->
+    <?php if ($paymentResult !== null): ?>
+        <div class="result-box">
+            <div class="result-title">
+                ✓ Deposit Link Ready
+            </div>
+
+            <div class="meta-list">
+                <div class="meta-item">
+                    <span class="label">Amount:</span>
+                    <span class="val"><?= htmlspecialchars($paymentResult['currency']) ?> <?= htmlspecialchars($paymentResult['amount']) ?></span>
+                </div>
+                <div class="meta-item">
+                    <span class="label">Order ID:</span>
+                    <span class="val"><?= htmlspecialchars($paymentResult['order_no']) ?></span>
+                </div>
+                <div class="meta-item">
+                    <span class="label">User/Phone:</span>
+                    <span class="val"><?= htmlspecialchars($paymentResult['username']) ?> / <?= htmlspecialchars($paymentResult['phone']) ?></span>
+                </div>
+                <?php if (!empty($paymentResult['platform_order_no'])): ?>
+                <div class="meta-item">
+                    <span class="label">Aeropay Ref:</span>
+                    <span class="val"><?= htmlspecialchars($paymentResult['platform_order_no']) ?></span>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <div class="url-display">
+                <?= htmlspecialchars($paymentResult['pay_url']) ?>
+            </div>
+
+            <a href="<?= htmlspecialchars($paymentResult['pay_url']) ?>" target="_blank" class="btn-pay">
+                Proceed to Payment &rarr;
+            </a>
+        </div>
+    <?php endif; ?>
+
+    <!-- Payment Initiation Form -->
     <form method="POST" action="">
         <div class="form-group">
-            <label for="username">Username / Player ID</label>
-            <input type="text" id="username" name="username" placeholder="user_123" required value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
+            <label for="amount">Deposit Amount</label>
+            <div class="amount-input-wrap">
+                <span class="currency-symbol">₹</span>
+                <input type="number" id="amount" name="amount" step="1" min="1" placeholder="500" required value="<?= htmlspecialchars($_POST['amount'] ?? '500') ?>">
+            </div>
+            
+            <!-- Quick Click Amount Selectors -->
+            <div class="quick-amounts">
+                <button type="button" class="quick-btn" onclick="setAmount(100)">+ ₹100</button>
+                <button type="button" class="quick-btn" onclick="setAmount(500)">+ ₹500</button>
+                <button type="button" class="quick-btn" onclick="setAmount(1000)">+ ₹1,000</button>
+                <button type="button" class="quick-btn" onclick="setAmount(2000)">+ ₹2,000</button>
+            </div>
         </div>
 
-        <div class="form-group">
-            <label for="amount">Deposit Amount (INR)</label>
-            <input type="number" id="amount" name="amount" step="0.01" min="1" placeholder="500.00" required value="<?= htmlspecialchars($_POST['amount'] ?? '') ?>">
-        </div>
-
-        <div class="checkbox-group">
-            <input type="checkbox" id="redirect" name="redirect" value="1" <?= isset($_POST['redirect']) ? 'checked' : '' ?>>
-            <label for="redirect" style="margin-bottom:0; font-weight: normal;">Auto-redirect straight to cashier</label>
-        </div>
+        <label class="checkbox-row">
+            <input type="checkbox" name="auto_redirect" value="1">
+            <span>Automatically redirect to gateway page upon submission</span>
+        </label>
 
         <button type="submit" class="btn-submit">Generate Deposit Link</button>
     </form>
 </div>
+
+<script>
+function setAmount(val) {
+    document.getElementById('amount').value = val;
+}
+</script>
 
 </body>
 </html>
