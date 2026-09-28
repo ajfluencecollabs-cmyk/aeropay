@@ -1,0 +1,160 @@
+<?php
+
+declare(strict_types=1);
+
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
+error_reporting(E_ALL);
+
+date_default_timezone_set('Asia/Kolkata');
+
+// 1. Include required configurations and Sign API class
+// Adjust paths according to your directory structure
+require_once __DIR__ . '/../../include/app_config.php';
+require_once __DIR__ . '/signapi.php';
+
+$rootConfig = dirname(__DIR__) . '/config.php';
+if (file_exists($rootConfig)) {
+    include_once $rootConfig;
+}
+
+// 2. Gateway Configuration
+$gatewayConfig = [
+    'api_base'   => 'https://api.aeropay11.live',
+    'merch_no'   => 'avtej',
+    'api_key'    => 'n5c01VfM44wSwD0tU60Z',
+    'currency'   => 'INR',
+    'notify_url' => app_url('/pages/index/payment/aeropay/confirm.php'),
+    'prefix'     => 'aero',
+];
+
+$error = '';
+
+// 3. Process Deposit Submission
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $username = trim((string) ($_POST['username'] ?? ''));
+    $amount   = trim((string) ($_POST['amount'] ?? ''));
+
+    // Validation
+    if ($username === '' || $amount === '') {
+        $error = 'Please enter both Username and Deposit Amount.';
+    } elseif (!is_numeric($amount) || (float) $amount <= 0) {
+        $error = 'Please enter a valid numeric deposit amount.';
+    } elseif (empty($gatewayConfig['merch_no']) || empty($gatewayConfig['api_key'])) {
+        $error = 'Aeropay gateway merchant credentials are not configured.';
+    } else {
+        $merchantOrderNo = $gatewayConfig['prefix'] . 'xx' . preg_replace('/[^a-zA-Z0-9_]/', '', $username) . 'xx' . time();
+        $formattedAmount = number_format((float) $amount, 2, '.', '');
+
+        // Build Payload
+        $payload = [
+            'amount'    => $formattedAmount,
+            'orderNo'   => $merchantOrderNo,
+            'merchNo'   => $gatewayConfig['merch_no'],
+            'currency'  => $gatewayConfig['currency'],
+            'notifyUrl' => $gatewayConfig['notify_url'],
+        ];
+
+        // Sign Payload
+        $signSource      = signapi::buildSignSource($payload);
+        $payload['sign'] = signapi::sign($payload, $gatewayConfig['api_key']);
+
+        // Post request to Gateway
+        $endpoint = rtrim($gatewayConfig['api_base'], '/') . '/api/payIn';
+        $response = signapi::postJson($endpoint, $payload);
+        $responseJson = $response['json'];
+
+        // File audit logging
+        file_put_contents(
+            __DIR__ . '/payment_log.txt',
+            json_encode([
+                'created_at'  => date('Y-m-d H:i:s'),
+                'sign_source' => $signSource,
+                'request'     => $payload,
+                'response'    => $response,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL,
+            FILE_APPEND
+        );
+
+        // Gateway Response Verification
+        if (!is_array($responseJson)) {
+            $error = 'Gateway returned an invalid response. Error: ' . htmlspecialchars($response['curl_error'] ?: 'Unknown error');
+        } elseif ((string) ($responseJson['code'] ?? '') !== '0') {
+            $error = 'Gateway Error: ' . htmlspecialchars((string) ($responseJson['msg'] ?? 'Transaction rejected'));
+        } else {
+            $data            = $responseJson['data'] ?? [];
+            $payUrl          = is_array($data) ? ($data['code_url'] ?? '') : '';
+            $platformOrderNo = is_array($data) ? ($data['businessNo'] ?? '') : '';
+
+            if ($payUrl === '') {
+                $error = 'Gateway failed to supply a valid payment URL.';
+            } else {
+                // Database insertion using prepared statements to prevent SQL injection
+                if (isset($conn) && $conn instanceof mysqli) {
+                    $today = date('Y-m-d H:i:s');
+                    $upi   = 'aeropay';
+
+                    $stmt = $conn->prepare("INSERT INTO recharge (username, recharge, upi, utr, created_at, orderNo) VALUES (?, ?, ?, ?, ?, ?)");
+                    if ($stmt) {
+                        $stmt->bind_param("ssssss", $username, $formattedAmount, $upi, $merchantOrderNo, $today, $platformOrderNo);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+                }
+
+                // Redirect user to Aeropay cashier page
+                header("Location: $payUrl");
+                exit;
+            }
+        }
+    }
+}
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deposit Funds</title>
+    <style>
+        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+        .card { background: #ffffff; width: 100%; max-width: 420px; padding: 28px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
+        h2 { margin: 0 0 8px; font-size: 22px; color: #0f172a; text-align: center; }
+        p.subtitle { margin: 0 0 24px; font-size: 14px; color: #64748b; text-align: center; }
+        .alert { background: #fee2e2; border-left: 4px solid #ef4444; color: #991b1b; padding: 12px; font-size: 14px; border-radius: 4px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 18px; }
+        label { display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; outline: none; transition: border-color 0.2s; }
+        input:focus { border-color: #2563eb; ring: 2px solid #93c5fd; }
+        .btn-submit { width: 100%; background: #2563eb; color: #ffffff; padding: 13px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+        .btn-submit:hover { background: #1d4ed8; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Deposit Wallet</h2>
+    <p class="subtitle">Complete your recharge via Aeropay</p>
+
+    <?php if ($error !== ''): ?>
+        <div class="alert"><?= $error ?></div>
+    <?php endif; ?>
+
+    <form method="POST" action="">
+        <div class="form-group">
+            <label for="username">Username / Account ID</label>
+            <input type="text" id="username" name="username" placeholder="e.g. user102" required value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
+        </div>
+
+        <div class="form-group">
+            <label for="amount">Deposit Amount (INR)</label>
+            <input type="number" id="amount" name="amount" step="0.01" min="1" placeholder="e.g. 500.00" required value="<?= htmlspecialchars($_POST['amount'] ?? '') ?>">
+        </div>
+
+        <button type="submit" class="btn-submit">Proceed to Pay</button>
+    </form>
+</div>
+
+</body>
+</html>
