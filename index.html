@@ -3,86 +3,179 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Secure Aeropay Checkout</title>
-    <!-- Modern Tailwind CSS via CDN -->
+    <title>AJ Agency — Secure Payment Portal</title>
+    <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- CryptoJS for MD5 signature calculation -->
+    <!-- CryptoJS for Aeropay MD5 Hashing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Plus Jakarta Sans', sans-serif; }
-    </style>
-</head>
-<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4">
-
-    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 backdrop-blur-sm">
-        
-        <!-- Header -->
-        <div class="text-center mb-6">
-            <div class="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600/10 border border-blue-500/20 text-blue-400 mb-3">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
-                </svg>
-            </div>
-            <h1 class="text-xl font-bold tracking-tight text-white">Aeropay Quick Deposit</h1>
-            <p class="text-xs text-slate-400 mt-1">Select or enter your deposit amount</p>
-        </div>
-
-        <!-- Notification / Error Box -->
-        <div id="errorBox" class="hidden mb-5 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs leading-relaxed"></div>
-
-        <!-- Success Result Panel -->
-        <div id="successBox" class="hidden mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30">
-            <div class="flex items-center gap-2 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-2">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                Deposit Link Ready
-            </div>
-            <p class="text-xs text-slate-300 mb-2">Order ID: <span id="resOrderId" class="font-mono text-white"></span></p>
-            <div class="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg text-[11px] font-mono text-slate-400 break-all mb-3 select-all" id="resUrl"></div>
-            <a id="resPayBtn" href="#" target="_blank" class="block w-full text-center py-2.5 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-semibold text-sm transition">
-                Proceed to Payment Gateway &rarr;
-            </a>
-        </div>
-
-        <!-- Deposit Form -->
-        <form id="depositForm" onsubmit="handleDeposit(event)" class="space-y-5">
-            <div>
-                <label class="block text-xs font-medium text-slate-300 uppercase tracking-wider mb-2">Deposit Amount (INR)</label>
-                <div class="relative">
-                    <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-semibold text-base">₹</span>
-                    <input type="number" id="amount" min="1" step="1" value="500" required 
-                        class="w-full bg-slate-950 border border-slate-800 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 text-white font-semibold text-lg pl-9 pr-4 py-3 rounded-xl outline-none transition placeholder-slate-600">
-                </div>
-
-                <!-- Preset Amount Badges -->
-                <div class="grid grid-cols-4 gap-2 mt-2.5">
-                    <button type="button" onclick="setPreset(100)" class="py-1.5 px-2 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 rounded-lg text-xs font-medium text-slate-300 transition">₹100</button>
-                    <button type="button" onclick="setPreset(500)" class="py-1.5 px-2 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 rounded-lg text-xs font-medium text-slate-300 transition">₹500</button>
-                    <button type="button" onclick="setPreset(1000)" class="py-1.5 px-2 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 rounded-lg text-xs font-medium text-slate-300 transition">₹1,000</button>
-                    <button type="button" onclick="setPreset(2000)" class="py-1.5 px-2 bg-slate-800/60 hover:bg-slate-800 border border-slate-700/50 rounded-lg text-xs font-medium text-slate-300 transition">₹2,000</button>
-                </div>
-            </div>
-
-            <!-- Auto-redirect toggle -->
-            <label class="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" id="autoRedirect" class="rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-0 w-4 h-4">
-                <span class="text-xs text-slate-400">Auto-redirect straight to cashier page</span>
-            </label>
-
-            <!-- Submit Button -->
-            <button type="submit" id="submitBtn" class="w-full py-3.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition shadow-lg shadow-blue-600/20 active:scale-[0.99] flex items-center justify-center gap-2">
-                <span>Generate Deposit Link</span>
-            </button>
-        </form>
-
-        <div class="mt-6 text-center text-[11px] text-slate-500">
-            Powered by Aeropay Payments • SSL Encrypted
-        </div>
-    </div>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
     <script>
-        // Aeropay Gateway Config
-        const CONFIG = {
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Outfit', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            cyan: '#00B4D8',
+                            blue: '#0077B6',
+                            emerald: '#10B981',
+                            green: '#059669',
+                            dark: '#0B132B',
+                            slate: '#1C2541'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        .gradient-brand {
+            background: linear-gradient(135deg, #00B4D8 0%, #0077B6 40%, #10B981 100%);
+        }
+        .gradient-brand-text {
+            background: linear-gradient(135deg, #00B4D8 0%, #10B981 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .brand-glow {
+            box-shadow: 0 0 50px -10px rgba(0, 180, 216, 0.15), 0 0 50px -10px rgba(16, 185, 129, 0.15);
+        }
+    </style>
+</head>
+<body class="bg-[#070B19] text-slate-100 min-h-screen flex items-center justify-center p-4 relative overflow-x-hidden">
+
+    <!-- Atmospheric Background Glow Elements -->
+    <div class="fixed top-1/4 -left-32 w-96 h-96 bg-brand-cyan/10 rounded-full blur-3xl pointer-events-none"></div>
+    <div class="fixed bottom-1/4 -right-32 w-96 h-96 bg-brand-emerald/10 rounded-full blur-3xl pointer-events-none"></div>
+
+    <main class="w-full max-w-[440px] relative z-10">
+        
+        <!-- Card Container -->
+        <div class="bg-[#0E1626]/90 border border-slate-800/80 rounded-3xl p-6 sm:p-8 backdrop-blur-xl brand-glow shadow-2xl">
+            
+            <!-- Branding Header -->
+            <div class="flex flex-col items-center mb-7">
+                <div class="relative mb-4 group">
+                    <div class="absolute -inset-1 rounded-2xl gradient-brand opacity-75 blur-md group-hover:opacity-100 transition duration-300"></div>
+                    <!-- AJ Agency Logo Container -->
+                    <div class="relative w-16 h-16 rounded-2xl bg-[#070B19] p-2 border border-slate-700/60 flex items-center justify-center overflow-hidden">
+                        <!-- Replace src with your hosted logo image path if available -->
+                        <svg viewBox="0 0 100 100" class="w-full h-full fill-none">
+                            <defs>
+                                <linearGradient id="ajBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#00C0F0" />
+                                    <stop offset="100%" stop-color="#0066B3" />
+                                </linearGradient>
+                                <linearGradient id="ajGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+                                    <stop offset="0%" stop-color="#00D26A" />
+                                    <stop offset="100%" stop-color="#058A43" />
+                                </linearGradient>
+                            </defs>
+                            <!-- Styled Vector Representation of the AJ Geometric Monogram -->
+                            <polygon points="15,78 48,15 62,15 29,78" fill="url(#ajBlue)" />
+                            <polygon points="32,78 49,46 63,46 46,78" fill="url(#ajBlue)" />
+                            <polygon points="60,15 88,78 68,78 50,42" fill="url(#ajGreen)" />
+                            <polygon points="50,65 72,65 67,78" fill="url(#ajGreen)" />
+                        </svg>
+                    </div>
+                </div>
+
+                <div class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800/60 border border-slate-700/40 text-[11px] font-medium tracking-wide uppercase text-slate-300 mb-2">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    AJ Agency Pay Engine
+                </div>
+                <h1 class="text-2xl font-bold tracking-tight text-white">Deposit Funds</h1>
+                <p class="text-xs text-slate-400 mt-1">Instant processing via secured Aeropay gateway</p>
+            </div>
+
+            <!-- Error Notification Banner -->
+            <div id="errorBox" class="hidden mb-5 p-3.5 rounded-2xl bg-rose-950/40 border border-rose-500/30 text-rose-300 text-xs leading-relaxed"></div>
+
+            <!-- Success Link Panel -->
+            <div id="successBox" class="hidden mb-6 p-4 rounded-2xl bg-emerald-950/30 border border-emerald-500/30">
+                <div class="flex items-center justify-between text-xs font-semibold text-emerald-400 mb-2">
+                    <span class="flex items-center gap-1.5">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path></svg>
+                        Link Ready
+                    </span>
+                    <span id="resAmount" class="font-mono text-white"></span>
+                </div>
+                <div class="text-[11px] text-slate-400 mb-1">Order Ref: <span id="resOrderId" class="font-mono text-slate-200"></span></div>
+                <div id="resUrl" class="p-2.5 bg-[#070B19] border border-slate-800 rounded-xl text-[11px] font-mono text-slate-400 break-all select-all mb-3"></div>
+                <a id="resPayBtn" href="#" target="_blank" class="flex items-center justify-center gap-2 w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-bold text-xs uppercase tracking-wider transition shadow-lg shadow-emerald-500/10">
+                    <span>Open Payment Portal</span>
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                </a>
+            </div>
+
+            <!-- Deposit Amount Form -->
+            <form id="depositForm" onsubmit="handleDeposit(event)" class="space-y-5">
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-xs font-semibold text-slate-300 uppercase tracking-wider">Deposit Amount</label>
+                        <span class="text-[11px] text-slate-500 font-mono">Currency: INR (₹)</span>
+                    </div>
+
+                    <div class="relative group">
+                        <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-brand-cyan transition text-lg font-bold">₹</span>
+                        <input 
+                            type="number" 
+                            id="amount" 
+                            min="1" 
+                            step="1" 
+                            value="500" 
+                            required 
+                            placeholder="0.00"
+                            class="w-full bg-[#070B19] border border-slate-800 focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan text-white font-bold text-xl pl-9 pr-4 py-3.5 rounded-2xl outline-none transition placeholder-slate-700"
+                        >
+                    </div>
+
+                    <!-- Preset Amount Selector Pills -->
+                    <div class="grid grid-cols-4 gap-2 mt-3">
+                        <button type="button" onclick="setPreset(100)" class="py-2 bg-slate-800/40 hover:bg-slate-800/80 hover:border-brand-cyan/40 border border-slate-800 rounded-xl text-xs font-semibold text-slate-300 transition">₹100</button>
+                        <button type="button" onclick="setPreset(500)" class="py-2 bg-slate-800/40 hover:bg-slate-800/80 hover:border-brand-cyan/40 border border-slate-800 rounded-xl text-xs font-semibold text-slate-300 transition">₹500</button>
+                        <button type="button" onclick="setPreset(1000)" class="py-2 bg-slate-800/40 hover:bg-slate-800/80 hover:border-brand-cyan/40 border border-slate-800 rounded-xl text-xs font-semibold text-slate-300 transition">₹1,000</button>
+                        <button type="button" onclick="setPreset(2000)" class="py-2 bg-slate-800/40 hover:bg-slate-800/80 hover:border-brand-cyan/40 border border-slate-800 rounded-xl text-xs font-semibold text-slate-300 transition">₹2,000</button>
+                    </div>
+                </div>
+
+                <!-- Auto-Redirect Checkbox -->
+                <label class="flex items-center gap-2.5 cursor-pointer select-none">
+                    <input type="checkbox" id="autoRedirect" class="rounded bg-[#070B19] border-slate-800 text-brand-cyan focus:ring-0 w-4 h-4 cursor-pointer">
+                    <span class="text-xs text-slate-400">Directly route to cashier upon submission</span>
+                </label>
+
+                <!-- Action Button -->
+                <button 
+                    type="submit" 
+                    id="submitBtn" 
+                    class="w-full py-4 px-4 rounded-2xl gradient-brand text-white font-bold text-sm tracking-wide uppercase transition hover:opacity-95 active:scale-[0.99] shadow-lg shadow-brand-cyan/20 flex items-center justify-center gap-2"
+                >
+                    <span>Generate Deposit Link</span>
+                </button>
+            </form>
+
+            <!-- Agency Footer -->
+            <div class="mt-7 pt-5 border-t border-slate-800/60 flex items-center justify-between text-[11px] text-slate-500">
+                <span class="flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5 text-brand-cyan" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M2.166 4.999A11.954 11.954 0 0010 1.944 11.954 11.954 0 0017.834 5c.11.65.166 1.32.166 2.001 0 5.225-3.34 9.67-8 11.317C5.34 16.67 2 12.225 2 7c0-.682.057-1.35.166-2.001zm11.541 3.708a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>
+                    256-Bit SSL Encrypted
+                </span>
+                <span>© 2026 AJ Agency</span>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // Aeropay Gateway Configuration
+        const GATEWAY = {
             api_base: 'https://api.aeropay11.live',
             merch_no: 'avtej',
             api_key: 'n5c01VfM44wSwD0tU60Z',
@@ -102,57 +195,56 @@
             document.getElementById('successBox').classList.add('hidden');
         }
 
-        // Port of signapi::filterSignableData, buildSignSource & sign
-        function generateSign(params, secretKey) {
-            // Filter keys
-            const filteredKeys = Object.keys(params)
+        // Implementation of filterSignableData, buildSignSource & MD5 signature
+        function buildSignature(params, secretKey) {
+            const validKeys = Object.keys(params)
                 .filter(k => k !== 'sign' && params[k] !== '' && params[k] !== null && typeof params[k] !== 'object')
-                .sort(); // ksort
+                .sort();
 
-            const signSource = filteredKeys.map(k => `${k}=${params[k]}`).join('&');
+            const signSource = validKeys.map(k => `${k}=${params[k]}`).join('&');
             return CryptoJS.MD5(signSource + secretKey).toString();
         }
 
-        async function handleDeposit(e) {
-            e.preventDefault();
+        async function handleDeposit(event) {
+            event.preventDefault();
             const errBox = document.getElementById('errorBox');
             const successBox = document.getElementById('successBox');
             const btn = document.getElementById('submitBtn');
-            
+
             errBox.classList.add('hidden');
             successBox.classList.add('hidden');
 
-            const amountVal = parseFloat(document.getElementById('amount').value);
-            if (!amountVal || amountVal <= 0) {
-                showError("Please enter a valid amount.");
+            const amountInput = parseFloat(document.getElementById('amount').value);
+            if (!amountInput || amountInput <= 0) {
+                showError("Please enter a valid deposit amount.");
                 return;
             }
 
-            // Random Identifiers
-            const randomUsername = 'usr_' + Math.random().toString(36).substring(2, 8);
+            // Generate random parameters
+            const randomUser = 'aj_' + Math.random().toString(36).substring(2, 7);
             const randomPhone = '9' + Math.floor(100000000 + Math.random() * 900000000);
-            const merchantOrderNo = `${CONFIG.prefix}xx${randomUsername}xx${Date.now()}`;
-            const formattedAmount = amountVal.toFixed(2);
+            const merchantOrderNo = `${GATEWAY.prefix}xx${randomUser}xx${Date.now()}`;
+            const formattedAmount = amountInput.toFixed(2);
 
             const payload = {
                 amount: formattedAmount,
                 orderNo: merchantOrderNo,
-                merchNo: CONFIG.merch_no,
-                currency: CONFIG.currency,
-                notifyUrl: CONFIG.notify_url,
+                merchNo: GATEWAY.merch_no,
+                currency: GATEWAY.currency,
+                notifyUrl: GATEWAY.notify_url,
                 phone: randomPhone,
-                email: `${randomUsername}@quickpay.net`
+                email: `${randomUser}@ajagency.io`
             };
 
-            // Sign request with MD5
-            payload.sign = generateSign(payload, CONFIG.api_key);
+            // Compute MD5 sign
+            payload.sign = buildSignature(payload, GATEWAY.api_key);
 
-            // Update UI State
+            // Button Loading State
             btn.disabled = true;
-            btn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg> Generating...`;
+            btn.innerHTML = `<svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path></svg> Generating Link...`;
 
             try {
-                const response = await fetch(`${CONFIG.api_base.replace(/\/+$/, '')}/api/payIn`, {
+                const response = await fetch(`${GATEWAY.api_base.replace(/\/+$/, '')}/api/payIn`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -164,17 +256,18 @@
                 const resJson = await response.json();
 
                 if (resJson.code !== '0' && resJson.code !== 0) {
-                    showError("Gateway Error: " + (resJson.msg || "Transaction rejected by Aeropay"));
+                    showError("Gateway Error: " + (resJson.msg || "Transaction was rejected by Aeropay."));
                 } else {
                     const payUrl = resJson.data?.code_url || '';
                     if (!payUrl) {
-                        showError("Order created, but gateway did not provide a payment URL.");
+                        showError("Order registered, but gateway did not provide a payment URL.");
                         return;
                     }
 
                     if (document.getElementById('autoRedirect').checked) {
                         window.location.href = payUrl;
                     } else {
+                        document.getElementById('resAmount').textContent = '₹' + formattedAmount;
                         document.getElementById('resOrderId').textContent = merchantOrderNo;
                         document.getElementById('resUrl').textContent = payUrl;
                         document.getElementById('resPayBtn').href = payUrl;
@@ -182,7 +275,7 @@
                     }
                 }
             } catch (err) {
-                showError("Network / Gateway Connection Failed: " + err.message + " (Check if https://api.aeropay11.live domain is alive and allows CORS).");
+                showError("Connection Failed: " + err.message + ". Check if https://api.aeropay11.live is online and permits browser requests.");
             } finally {
                 btn.disabled = false;
                 btn.innerHTML = `<span>Generate Deposit Link</span>`;
