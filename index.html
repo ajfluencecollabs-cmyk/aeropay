@@ -8,17 +8,121 @@ error_reporting(E_ALL);
 
 date_default_timezone_set('Asia/Kolkata');
 
-// 1. Include required configurations and Sign API class
-// Adjust paths according to your directory structure
-require_once __DIR__ . '/../../include/app_config.php';
-require_once __DIR__ . '/signapi.php';
+// ==========================================
+// 1. SIGN API CLASS (Directly Embedded)
+// ==========================================
+class signapi
+{
+    public static function filterSignableData(array $data): array
+    {
+        $filtered = [];
+
+        foreach ($data as $key => $value) {
+            if ($key === 'sign' || $value === '' || $value === null) {
+                continue;
+            }
+
+            if (is_array($value) || is_object($value)) {
+                continue;
+            }
+
+            $filtered[(string) $key] = (string) $value;
+        }
+
+        ksort($filtered, SORT_STRING);
+
+        return $filtered;
+    }
+
+    public static function buildSignSource(array $data): string
+    {
+        $parts = [];
+
+        foreach (self::filterSignableData($data) as $key => $value) {
+            $parts[] = $key . '=' . $value;
+        }
+
+        return implode('&', $parts);
+    }
+
+    public static function sign(array $data, string $apiKey): string
+    {
+        return md5(self::buildSignSource($data) . $apiKey);
+    }
+
+    public static function validate(array $data, string $apiKey, ?string $expectedSign = null): bool
+    {
+        $signature = $expectedSign ?? ($data['sign'] ?? '');
+
+        if ($signature === '') {
+            return false;
+        }
+
+        return strtolower(self::sign($data, $apiKey)) === strtolower($signature);
+    }
+
+    public static function postJson(string $url, array $payload, int $timeout = 30): array
+    {
+        $ch = curl_init($url);
+        $jsonPayload = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+            ],
+            CURLOPT_POSTFIELDS     => $jsonPayload,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
+        ]);
+
+        $responseBody = curl_exec($ch);
+        $curlError    = curl_error($ch);
+        $httpCode     = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        $decoded = null;
+        if (is_string($responseBody) && $responseBody !== '') {
+            $decoded = json_decode($responseBody, true);
+        }
+
+        return [
+            'http_code'  => $httpCode,
+            'body'       => $responseBody,
+            'json'       => is_array($decoded) ? $decoded : null,
+            'curl_error' => $curlError,
+            'payload'    => $payload,
+        ];
+    }
+}
+
+// ==========================================
+// 2. CONFIGURATION & DATABASE SETUP
+// ==========================================
+// Include database connection if available
+$appConfig = __DIR__ . '/../../include/app_config.php';
+if (file_exists($appConfig)) {
+    require_once $appConfig;
+}
 
 $rootConfig = dirname(__DIR__) . '/config.php';
 if (file_exists($rootConfig)) {
     include_once $rootConfig;
 }
 
-// 2. Gateway Configuration
+// Fallback helper for notify_url if app_url() is not defined in config
+if (!function_exists('app_url')) {
+    function app_url(string $path = ''): string {
+        $protocol = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? "https://" : "http://";
+        $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+        return rtrim($protocol . $host, '/') . '/' . ltrim($path, '/');
+    }
+}
+
 $gatewayConfig = [
     'api_base'   => 'https://api.aeropay11.live',
     'merch_no'   => 'avtej',
@@ -29,24 +133,26 @@ $gatewayConfig = [
 ];
 
 $error = '';
+$generatedUrl = '';
 
-// 3. Process Deposit Submission
+// ==========================================
+// 3. FORM PROCESSING & AEROPAY CALL
+// ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim((string) ($_POST['username'] ?? ''));
     $amount   = trim((string) ($_POST['amount'] ?? ''));
 
-    // Validation
     if ($username === '' || $amount === '') {
         $error = 'Please enter both Username and Deposit Amount.';
     } elseif (!is_numeric($amount) || (float) $amount <= 0) {
-        $error = 'Please enter a valid numeric deposit amount.';
-    } elseif (empty($gatewayConfig['merch_no']) || empty($gatewayConfig['api_key'])) {
-        $error = 'Aeropay gateway merchant credentials are not configured.';
+        $error = 'Please enter a valid amount.';
     } else {
-        $merchantOrderNo = $gatewayConfig['prefix'] . 'xx' . preg_replace('/[^a-zA-Z0-9_]/', '', $username) . 'xx' . time();
+        // Generate unique merchant order ID
+        $cleanUser       = preg_replace('/[^a-zA-Z0-9_]/', '', $username);
+        $merchantOrderNo = $gatewayConfig['prefix'] . 'xx' . $cleanUser . 'xx' . time();
         $formattedAmount = number_format((float) $amount, 2, '.', '');
 
-        // Build Payload
+        // 1. Build Payload
         $payload = [
             'amount'    => $formattedAmount,
             'orderNo'   => $merchantOrderNo,
@@ -55,17 +161,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'notifyUrl' => $gatewayConfig['notify_url'],
         ];
 
-        // Sign Payload
+        // 2. Generate Sign Source & Sign using signapi class
         $signSource      = signapi::buildSignSource($payload);
         $payload['sign'] = signapi::sign($payload, $gatewayConfig['api_key']);
 
-        // Post request to Gateway
-        $endpoint = rtrim($gatewayConfig['api_base'], '/') . '/api/payIn';
-        $response = signapi::postJson($endpoint, $payload);
+        // 3. POST JSON directly to Aeropay
+        $apiUrl   = rtrim($gatewayConfig['api_base'], '/') . '/api/payIn';
+        $response = signapi::postJson($apiUrl, $payload);
         $responseJson = $response['json'];
 
-        // File audit logging
-        file_put_contents(
+        // Write debug log
+        @file_put_contents(
             __DIR__ . '/payment_log.txt',
             json_encode([
                 'created_at'  => date('Y-m-d H:i:s'),
@@ -76,25 +182,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             FILE_APPEND
         );
 
-        // Gateway Response Verification
+        // 4. Handle Gateway Response
         if (!is_array($responseJson)) {
-            $error = 'Gateway returned an invalid response. Error: ' . htmlspecialchars($response['curl_error'] ?: 'Unknown error');
+            $error = 'Gateway returned an unreadable response. ' . ($response['curl_error'] ?? '');
         } elseif ((string) ($responseJson['code'] ?? '') !== '0') {
-            $error = 'Gateway Error: ' . htmlspecialchars((string) ($responseJson['msg'] ?? 'Transaction rejected'));
+            $error = 'Gateway rejected: ' . ($responseJson['msg'] ?? 'Unknown error code');
         } else {
             $data            = $responseJson['data'] ?? [];
             $payUrl          = is_array($data) ? ($data['code_url'] ?? '') : '';
             $platformOrderNo = is_array($data) ? ($data['businessNo'] ?? '') : '';
 
             if ($payUrl === '') {
-                $error = 'Gateway failed to supply a valid payment URL.';
+                $error = 'Gateway returned success but no payment URL was found.';
             } else {
-                // Database insertion using prepared statements to prevent SQL injection
+                // Save to database if $conn exists
                 if (isset($conn) && $conn instanceof mysqli) {
                     $today = date('Y-m-d H:i:s');
                     $upi   = 'aeropay';
-
-                    $stmt = $conn->prepare("INSERT INTO recharge (username, recharge, upi, utr, created_at, orderNo) VALUES (?, ?, ?, ?, ?, ?)");
+                    $stmt  = $conn->prepare("INSERT INTO recharge (username, recharge, upi, utr, created_at, orderNo) VALUES (?, ?, ?, ?, ?, ?)");
                     if ($stmt) {
                         $stmt->bind_param("ssssss", $username, $formattedAmount, $upi, $merchantOrderNo, $today, $platformOrderNo);
                         $stmt->execute();
@@ -102,9 +207,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                // Redirect user to Aeropay cashier page
-                header("Location: $payUrl");
-                exit;
+                // If checkbox is selected, show link on screen; otherwise auto-redirect
+                if (isset($_POST['redirect']) && $_POST['redirect'] === '1') {
+                    header("Location: " . $payUrl);
+                    exit;
+                } else {
+                    $generatedUrl = $payUrl;
+                }
             }
         }
     }
@@ -115,44 +224,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deposit Funds</title>
+    <title>Aeropay Deposit</title>
     <style>
         * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        body { background: #f1f5f9; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
-        .card { background: #ffffff; width: 100%; max-width: 420px; padding: 28px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.06); }
-        h2 { margin: 0 0 8px; font-size: 22px; color: #0f172a; text-align: center; }
+        body { background: #f8fafc; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px; }
+        .card { background: #ffffff; width: 100%; max-width: 440px; padding: 32px; border-radius: 12px; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }
+        h2 { margin: 0 0 8px; font-size: 20px; color: #0f172a; text-align: center; }
         p.subtitle { margin: 0 0 24px; font-size: 14px; color: #64748b; text-align: center; }
-        .alert { background: #fee2e2; border-left: 4px solid #ef4444; color: #991b1b; padding: 12px; font-size: 14px; border-radius: 4px; margin-bottom: 20px; }
-        .form-group { margin-bottom: 18px; }
+        .alert-error { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px; font-size: 14px; border-radius: 6px; margin-bottom: 20px; }
+        .alert-success { background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534; padding: 16px; font-size: 14px; border-radius: 6px; margin-bottom: 20px; word-break: break-all; }
+        .form-group { margin-bottom: 16px; }
         label { display: block; font-size: 13px; font-weight: 600; color: #334155; margin-bottom: 6px; }
-        input[type="text"], input[type="number"] { width: 100%; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 8px; font-size: 15px; outline: none; transition: border-color 0.2s; }
-        input:focus { border-color: #2563eb; ring: 2px solid #93c5fd; }
-        .btn-submit { width: 100%; background: #2563eb; color: #ffffff; padding: 13px; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: background 0.2s; }
-        .btn-submit:hover { background: #1d4ed8; }
+        input[type="text"], input[type="number"] { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 15px; outline: none; }
+        input:focus { border-color: #0284c7; ring: 2px solid #bae6fd; }
+        .checkbox-group { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 14px; color: #475569; }
+        .btn-submit { width: 100%; background: #0284c7; color: #ffffff; padding: 12px; border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; }
+        .btn-submit:hover { background: #0369a1; }
+        .btn-pay { display: inline-block; margin-top: 10px; background: #16a34a; color: #fff; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-weight: bold; }
     </style>
 </head>
 <body>
 
 <div class="card">
-    <h2>Deposit Wallet</h2>
-    <p class="subtitle">Complete your recharge via Aeropay</p>
+    <h2>Generate Aeropay Link</h2>
+    <p class="subtitle">Enter details to initiate deposit transaction</p>
 
     <?php if ($error !== ''): ?>
-        <div class="alert"><?= $error ?></div>
+        <div class="alert-error"><?= htmlspecialchars($error) ?></div>
+    <?php endif; ?>
+
+    <?php if ($generatedUrl !== ''): ?>
+        <div class="alert-success">
+            <strong>Deposit Link Created!</strong><br>
+            <div style="margin-top: 8px; font-size: 12px; color: #374151;"><?= htmlspecialchars($generatedUrl) ?></div>
+            <a href="<?= htmlspecialchars($generatedUrl) ?>" target="_blank" class="btn-pay">Open Payment Page &rarr;</a>
+        </div>
     <?php endif; ?>
 
     <form method="POST" action="">
         <div class="form-group">
-            <label for="username">Username / Account ID</label>
-            <input type="text" id="username" name="username" placeholder="e.g. user102" required value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
+            <label for="username">Username / Player ID</label>
+            <input type="text" id="username" name="username" placeholder="user_123" required value="<?= htmlspecialchars($_POST['username'] ?? '') ?>">
         </div>
 
         <div class="form-group">
             <label for="amount">Deposit Amount (INR)</label>
-            <input type="number" id="amount" name="amount" step="0.01" min="1" placeholder="e.g. 500.00" required value="<?= htmlspecialchars($_POST['amount'] ?? '') ?>">
+            <input type="number" id="amount" name="amount" step="0.01" min="1" placeholder="500.00" required value="<?= htmlspecialchars($_POST['amount'] ?? '') ?>">
         </div>
 
-        <button type="submit" class="btn-submit">Proceed to Pay</button>
+        <div class="checkbox-group">
+            <input type="checkbox" id="redirect" name="redirect" value="1" <?= isset($_POST['redirect']) ? 'checked' : '' ?>>
+            <label for="redirect" style="margin-bottom:0; font-weight: normal;">Auto-redirect straight to cashier</label>
+        </div>
+
+        <button type="submit" class="btn-submit">Generate Deposit Link</button>
     </form>
 </div>
 
